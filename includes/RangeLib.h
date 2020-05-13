@@ -50,6 +50,8 @@ Useful Links: https://github.com/MRPT/mrpt/blob/4137046479222f3a71b5c00aee1d5fa8
 #include <cassert>
 #include <tuple>
 
+#include <random>
+
 #ifndef _MAKE_TRACE_MAP 
 	#define _MAKE_TRACE_MAP 0
 #endif
@@ -412,7 +414,7 @@ namespace ranges {
 	class RangeMethod
 	{
 	public:
-		RangeMethod(OMap m, float mr) : map(m), max_range(mr) {};
+		RangeMethod(OMap m, float mr) : map(m), max_range(mr)  {};
 		virtual ~RangeMethod() {};
 
 		virtual float calc_range(float x, float y, float heading) = 0;
@@ -773,8 +775,10 @@ namespace ranges {
 
 	class RayMarchingGPU : public RangeMethod
 	{
+
 	public:
-		RayMarchingGPU(OMap m, float mr) : RangeMethod(m, mr) { 
+		RayMarchingGPU(OMap m, float mr) : RangeMethod(m, mr) {
+
 			distImage = new DistanceTransform(&m);
 			#if USE_CUDA == 1
 			rmc = new RayMarchingCUDA(distImage->grid, distImage->width, distImage->height, max_range);
@@ -834,13 +838,29 @@ namespace ranges {
 		// and store the result to the given outputs. Useful for avoiding cython function
 		// call overhead by passing it a numpy array pointer. Indexing assumes a 3xn numpy array
 		// for the inputs and a 1xn numpy array of the outputs
-		void numpy_calc_range(float * ins, float * outs, int num_casts) {
+		//
+		// edit:
+		//
+		// input is the same except theta's are set here.
+		void numpy_calc_range(float * ins, float * outs, float fov, int num_casts, int num_rays) {
 			#if USE_CUDA == 1
 			#if ROS_WORLD_TO_GRID_CONVERSION == 0
 			std::cout << "Cannot use GPU numpy_calc_range without ROS_WORLD_TO_GRID_CONVERSION == 1" << std::endl;
 			return;
 			#endif
 			maybe_warn(num_casts);
+			// deal with rays here
+			int num_scenes = num_casts / num_rays;
+			float theta_inc = fov/static_cast<float>(num_rays);
+			for(int i = 0; i < num_scenes; ++i){
+				float theta_min = ins[i*num_rays+2] - (fov/2.0);
+				for(int j = 0; j < (num_rays*3)-2; j+=3){
+					ins[i*num_rays + (j+0)] = ins[i*num_rays + 0]; // x
+					ins[i*num_rays + (j+1)] = ins[i*num_rays + 1]; // y
+					ins[i*num_rays + (j+2)] = theta_min; // theta
+					theta_min += theta_inc;
+				}
+			}
 			int iters = std::ceil((float)num_casts / (float)CHUNK_SIZE);
 			for (int i = 0; i < iters; ++i) {
 				int num_in_chunk = CHUNK_SIZE;
@@ -922,8 +942,11 @@ namespace ranges {
 	class RayMarching : public RangeMethod
 	{
 	public:
-		RayMarching(OMap m, float mr) : RangeMethod(m, mr) { distImage = DistanceTransform(&m); }
-		
+		RayMarching(OMap m, float mr) : RangeMethod(m, mr)
+		{
+			distImage = DistanceTransform(&m);
+		}
+
 		float ANIL calc_range(float x, float y, float heading) {
 			float x0 = x;
 			float y0 = y;
@@ -961,6 +984,69 @@ namespace ranges {
 			return max_range; 
 		}
 
+		// wrapper function to call calc_range repeatedly with the given array of inputs
+		// and store the result to the given outputs. Useful for avoiding cython function
+		// call overhead by passing it a numpy array pointer. Indexing assumes a 3xn numpy array
+		// for the inputs and a 1xn numpy array of the outputs
+		void numpy_calc_range(float * ins, float * outs, float fov, int num_casts, int num_rays) {
+			#if ROS_WORLD_TO_GRID_CONVERSION == 1
+			// cache these constants on the stack for efficiency
+			float inv_world_scale = 1.0 / map.world_scale; 
+			float world_scale = map.world_scale; 
+			float world_angle = map.world_angle;
+			float world_origin_x = map.world_origin_x;
+			float world_origin_y = map.world_origin_y;
+			float world_sin_angle = map.world_sin_angle;
+			float world_cos_angle = map.world_cos_angle;
+
+			float rotation_const = -1.0 * world_angle - 3.0*M_PI / 2.0;
+
+			// avoid allocation on every loop iteration
+			float x_world;
+			float y_world;
+			float theta_world;
+			float x;
+			float y;
+			float temp;
+			float theta;
+			#endif
+
+			// deal with rays here, this will prob break if not RayMarching
+			int num_scenes = num_casts / num_rays;
+			float theta_inc = fov/static_cast<float>(num_rays);
+			for(int i = 0; i < num_scenes; ++i){
+				float theta_min = ins[i*num_rays+2] - (fov/2.0);
+				for(int j = 0; j < (num_rays*3)-2; j+=3){
+					ins[i*num_rays + (j+0)] = ins[i*num_rays + 0]; // x
+					ins[i*num_rays + (j+1)] = ins[i*num_rays + 1]; // y
+					ins[i*num_rays + (j+2)] = theta_min; // theta
+					theta_min += theta_inc;
+				}
+			}
+
+
+			for (int i = 0; i < num_casts; ++i) {
+				#if ROS_WORLD_TO_GRID_CONVERSION == 1
+				x_world = ins[i*3];
+				y_world = ins[i*3+1];
+				theta_world = ins[i*3+2];
+
+				x = (x_world - world_origin_x) * inv_world_scale;
+				y = (y_world - world_origin_y) * inv_world_scale;
+				temp = x;
+				x = world_cos_angle*x - world_sin_angle*y;
+				y = world_sin_angle*temp + world_cos_angle*y;
+				theta = -theta_world + rotation_const;
+
+				outs[i] = calc_range(y, x, theta) * world_scale;
+				#else
+				outs[i] = calc_range(ins[i*3], ins[i*3+1], ins[i*3+2]);
+				#endif
+			}
+		}
+
+
+
 		int memory() { return distImage.memory(); }
 	protected:
 		DistanceTransform distImage;
@@ -970,6 +1056,7 @@ namespace ranges {
 
 	class CDDTCast : public RangeMethod
 	{
+
 	public:
 		CDDTCast(OMap m, float mr, unsigned int td) :  RangeMethod(m, mr), theta_discretization(td) { 
 			#if _USE_CACHED_CONSTANTS
@@ -1785,6 +1872,7 @@ namespace ranges {
 			max_div_limits = max_range/std::numeric_limits<uint16_t>::max();
 			limits_div_max = std::numeric_limits<uint16_t>::max() / max_range;
 			#endif
+			// remove zeros
 			RayMarching seed_cast = RayMarching(m, mr);
 			// CDDTCast seed_cast = CDDTCast(m, mr, td);
 

@@ -31,9 +31,9 @@ trace    = check_for_flag("TRACE", \
 	"Compiling with trace enabled for Bresenham's Line", \
 	"Compiling without trace enabled for Bresenham's Line")
 
-print 
+print
 print "--------------"
-print 
+print
 
 # support for compiling in clang
 if platform.system().lower() == "darwin":
@@ -93,7 +93,7 @@ def locate_cuda():
 
 # compiler_flags = ["-w","-std=c++11", "-march=native", "-ffast-math", "-fno-math-errno"]
 compiler_flags = ["-w","-std=c++11", "-march=native", "-ffast-math", "-fno-math-errno", "-O3"]
-nvcc_flags = ['-arch=sm_20', '--ptxas-options=-v', '-c', '--compiler-options', "'-fPIC'", "-w","-std=c++11"]
+nvcc_flags = ['-arch=sm_61', '--ptxas-options=-v', '-c', '--compiler-options', "'-fPIC'", "-w","-std=c++11"]
 include_dirs = ["../", numpy_include]
 depends = ["../includes/*.h"]
 sources = ["RangeLibc.pyx","../vendor/lodepng/lodepng.cpp"]
@@ -161,7 +161,7 @@ class custom_build_ext(build_ext):
         build_ext.build_extensions(self)
 
 if use_cuda:
-	ext = Extension("range_libc", sources, 
+	ext = Extension("range_libc", sources,
 					extra_compile_args = {'gcc': compiler_flags, 'nvcc': nvcc_flags},
 					extra_link_args = ["-std=c++11"],
 					include_dirs = include_dirs,
@@ -178,7 +178,7 @@ if use_cuda:
 		cmdclass={'build_ext': custom_build_ext})
 else:
 	setup(ext_modules=[
-			Extension("range_libc", sources, 
+			Extension("range_libc", sources,
 				extra_compile_args = compiler_flags,
 				extra_link_args = ["-std=c++11"],
 				include_dirs = include_dirs,
